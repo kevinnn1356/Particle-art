@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D 手勢互動粒子系統 V29 (Stable Bloom Fix)</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Google Fonts & Icons -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000000; font-family: 'Inter', sans-serif; cursor: grab; }
+        body.grabbing { cursor: grabbing; }
+
+        #canvas-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        #video-element { position: absolute; top: 0; left: 0; opacity: 0; pointer-events: none; z-index: -1; }
+        
+        /* UI Styles */
+        .drawer-panel {
+            background: rgba(5, 5, 8, 0.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+            border-left: 1px solid rgba(255, 255, 255, 0.15); transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+            box-shadow: -20px 0 60px rgba(0,0,0,0.9);
+        }
+        .no-scrollbar::-webkit-scrollbar { display: none; } .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .btn-shape {
+            background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1);
+            transition: all 0.1s ease; text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.65rem; font-weight: 700; color: rgba(255, 255, 255, 0.7);
+        }
+        .btn-shape:hover { background: rgba(255, 255, 255, 0.15); color: white; border-color: rgba(255, 255, 255, 0.5); }
+        .btn-shape.active {
+            background: rgba(255, 255, 255, 0.25); border-color: #ffffff; color: white;
+            box-shadow: 0 0 15px rgba(255, 255, 255, 0.4), 0 0 30px rgba(255, 255, 255, 0.2);
+        }
+        .color-dot {
+            width: 32px; height: 32px; border-radius: 50%; cursor: pointer;
+            transition: transform 0.2s, border-color 0.2s;
+            border: 1px solid rgba(255,255,255,0.2); box-shadow: inset 0 0 10px rgba(0,0,0,0.5);
+        }
+        .color-dot:hover { transform: scale(1.15); border-color: #fff; }
+        .color-dot.active { border-color: #fff; transform: scale(1.25); box-shadow: 0 0 15px rgba(255,255,255,0.5); }
+        
+        input[type=range] { -webkit-appearance: none; width: 100%; background: transparent; }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none; height: 12px; width: 12px; border-radius: 50%; background: #ffffff;
+            cursor: pointer; margin-top: -4px; box-shadow: 0 0 8px rgba(255,255,255,0.8);
+        }
+        input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 4px; cursor: pointer; background: rgba(255, 255, 255, 0.2); border-radius: 0; }
+        
+        .recording-pulse { animation: pulse-red 1.5s infinite; }
+        @keyframes pulse-red { 0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); } 70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); } 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); } }
+        .loader { width: 4px; height: 24px; background: white; animation: loader-anim 1s infinite ease-in-out; position: relative; }
+        .loader::before, .loader::after { content: ''; position: absolute; top: 0; width: 4px; height: 24px; background: white; }
+        .loader::before { left: -10px; animation: loader-anim 1s infinite ease-in-out 0.2s; }
+        .loader::after { left: 10px; animation: loader-anim 1s infinite ease-in-out 0.4s; }
+        @keyframes loader-anim { 0%, 100% { transform: scaleY(1); opacity: 1; } 50% { transform: scaleY(0.4); opacity: 0.5; } }
+    </style>
+
+    <!-- 【關鍵修復】 Import Map：讓瀏覽器知道去哪裡下載 Three.js 模組 -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body class="text-white">
+    <div id="loading-overlay" class="fixed inset-0 bg-black z-50 flex flex-col items-center justify-center transition-opacity duration-500"><div class="loader mb-8"></div><h2 id="loading-text" class="text-xs font-bold tracking-[0.3em] text-white">SYSTEM INITIALIZING</h2></div>
+    <div id="canvas-container"></div><video id="video-element" playsinline></video>
+    <button id="menu-toggle" class="fixed top-6 right-6 z-40 w-10 h-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:bg-white/20 transition-all text-white hover:text-white"><i class="fa-solid fa-bars text-sm"></i></button>
+    
+    <aside id="drawer" class="fixed top-0 right-0 h-full w-80 drawer-panel z-30 translate-x-full pt-24 pb-8 px-8 flex flex-col justify-between">
+        <div class="overflow-y-auto no-scrollbar flex-1">
+            <div class="mb-10"><h3 class="text-[9px] font-bold tracking-[0.2em] text-gray-400 mb-4 uppercase">Geometry</h3><div class="grid grid-cols-3 gap-2" id="shape-container"><button data-shape="heart" class="btn-shape h-10 rounded-sm">Heart</button><button data-shape="heart_1" class="btn-shape active h-10 rounded-sm">Heart 1</button><button data-shape="flower" class="btn-shape h-10 rounded-sm">Flower</button><button data-shape="saturn" class="btn-shape h-10 rounded-sm">Saturn</button><button data-shape="donut" class="btn-shape h-10 rounded-sm">Donut</button><button data-shape="pyramid" class="btn-shape h-10 rounded-sm">Pyramid</button><button data-shape="sphere" class="btn-shape h-10 rounded-sm">Sphere</button></div></div>
+            <div class="mb-10"><h3 class="text-[9px] font-bold tracking-[0.2em] text-gray-400 mb-4 uppercase">Core Frequency</h3><div class="grid grid-cols-5 gap-3" id="color-container"></div></div>
+            <div class="mb-8 space-y-6">
+                <div><div class="flex justify-between mb-2 items-end"><label class="text-[9px] font-bold tracking-[0.2em] text-gray-400 uppercase">Zoom Level</label><span id="val-scale" class="text-[10px] font-mono text-white">1.0x</span></div><input type="range" id="slider-scale" min="0.7" max="4.0" step="0.1" value="1.0"></div>
+                <div><div class="flex justify-between mb-2 items-end"><label class="text-[9px] font-bold tracking-[0.2em] text-gray-400 uppercase">Brightness</label><span id="val-lum" class="text-[10px] font-mono text-white">100%</span></div><input type="range" id="slider-lum" min="0.1" max="1.0" step="0.1" value="1.0"></div>
+                <div><div class="flex justify-between mb-2 items-end"><label class="text-[9px] font-bold tracking-[0.2em] text-gray-400 uppercase">Glow Strength</label><span id="val-bloom" class="text-[10px] font-mono text-white">1.5</span></div><input type="range" id="slider-bloom" min="0.0" max="3.0" step="0.1" value="1.5"></div>
+                <div><div class="flex justify-between mb-2 items-end"><label class="text-[9px] font-bold tracking-[0.2em] text-gray-400 uppercase">Particle Count</label><span id="val-dens" class="text-[10px] font-mono text-white">25k</span></div><input type="range" id="slider-dens" min="5000" max="35000" step="1000" value="25000"></div>
+            </div>
+        </div>
+        <div class="mt-4 pt-6 border-t border-white/10"><button id="btn-record" class="w-full h-10 rounded-sm bg-white/5 border border-white/20 hover:bg-white/10 transition-all flex items-center justify-center gap-3 group"><div id="record-dot" class="w-1.5 h-1.5 rounded-full bg-gray-400 group-hover:bg-red-500 transition-colors"></div><span id="record-text" class="text-[10px] font-bold tracking-[0.2em] uppercase text-gray-400 group-hover:text-white">Capture Sequence</span></button></div>
+    </aside>
+
+    <!-- Global Scripts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/simplex-noise/2.4.0/simplex-noise.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <!-- Main Module Script -->
+    <script type="module">
+        // Import via the mapped names defined in <script type="importmap"> above
+        import * as THREE from 'three';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+        const simplex = new SimplexNoise();
+
+        // --- 1. Texture Generation ---
+        function createCircleTexture() {
+            const canvas = document.createElement('canvas'); canvas.width = 64; canvas.height = 64;
+            const ctx = canvas.getContext('2d');
+            const grad = ctx.createRadialGradient(32,32,0,32,32,32);
+            grad.addColorStop(0, 'rgba(255,255,255,1)');    
+            grad.addColorStop(0.3, 'rgba(255,255,255,0.9)'); 
+            grad.addColorStop(0.5, 'rgba(255,255,255,0)');   
+            ctx.fillStyle = grad; ctx.fillRect(0,0,64,64);
+            const texture = new THREE.Texture(canvas); texture.needsUpdate = true; return texture;
+        }
+
+        // --- 2. Scene & Renderer ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene(); scene.fog = new THREE.FogExp2(0x000000, 0.015);
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1000);
+        const cameraBaseZ = 42; camera.position.z = cameraBaseZ;
+        const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, preserveDrawingBuffer: true });
+        renderer.setSize(window.innerWidth, window.innerHeight); 
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ReinhardToneMapping; 
+        container.appendChild(renderer.domElement);
+
+        // --- 3. Post-Processing (BLOOM) ---
+        const renderScene = new RenderPass(scene, camera);
+        const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+        bloomPass.threshold = 0.0; bloomPass.strength = 1.5; bloomPass.radius = 0.4;
+        const composer = new EffectComposer(renderer);
+        composer.addPass(renderScene);
+        composer.addPass(bloomPass);
+
+        // --- 4. Material & Colors ---
+        const colorPalettes = [
+            { name: 'Aurora', core: 0x00c6ff, rim: 0x0072ff }, { name: 'Sunset', core: 0xfce38a, rim: 0xf38181 }, { name: 'Ocean', core: 0x4facfe, rim: 0x00f2fe }, { name: 'Snow', core: 0xffffff, rim: 0xcccccc }, { name: 'Ruby', core: 0xff0844, rim: 0xffb199 },   
+            { name: 'Tomato', core: 0xff6347, rim: 0xff0000 }, { name: 'Carrot', core: 0xffa500, rim: 0xff4500 }, { name: 'Lemon', core: 0xffd700, rim: 0xfffacd }, { name: 'Lime', core: 0x32cd32, rim: 0x00ff00 }, { name: 'Turquoise', core: 0x40e0d0, rim: 0x00ced1 },
+            { name: 'Sky', core: 0x87ceeb, rim: 0x00bfff }, { name: 'Azure', core: 0x1e90ff, rim: 0x0000ff }, { name: 'Amethyst', core: 0x9966cc, rim: 0x8a2be2 }, { name: 'Orchid', core: 0xbd00ff, rim: 0x9400d3 }, { name: 'Rose', core: 0xff69b4, rim: 0xff1493 } 
+        ];
+
+        const circleTexture = createCircleTexture();
+        const particleUniforms = {
+            colorCore: { value: new THREE.Color(colorPalettes[14].core) },
+            colorRim: { value: new THREE.Color(colorPalettes[14].rim) },
+            pointTexture: { value: circleTexture },
+            globalOpacity: { value: 1.0 }, 
+            scaleFactor: { value: 1.0 }
+        };
+        const particleMaterial = new THREE.ShaderMaterial({
+            uniforms: particleUniforms,
+            vertexShader: `attribute float size; uniform float scaleFactor; varying vec3 vPosition; void main() { vPosition = position; vec4 mvPosition = modelViewMatrix * vec4( position, 1.0 ); float sizeAdjust = smoothstep(15.0, 1.0, scaleFactor); gl_PointSize = size * (0.6 + sizeAdjust*0.4) * ( 280.0 / max(0.1, -mvPosition.z) ); gl_Position = projectionMatrix * mvPosition; }`,
+            fragmentShader: `uniform vec3 colorCore; uniform vec3 colorRim; uniform float globalOpacity; uniform sampler2D pointTexture; varying vec3 vPosition; void main() { float dist = length(vPosition); float mixFactor = smoothstep(0.0, 35.0, dist); vec3 finalColor = mix(colorCore, colorRim, mixFactor); vec4 texColor = texture2D( pointTexture, gl_PointCoord ); if (texColor.a < 0.1) discard; float depthFade = smoothstep(0.2, 2.0, gl_FragCoord.z / gl_FragCoord.w); gl_FragColor = vec4( finalColor, texColor.a * globalOpacity * depthFade ); }`,
+            blending: THREE.AdditiveBlending, depthTest: false, transparent: true
+        });
+
+        // --- 5. Geometry Generation ---
+        let particles, particleGeometry; const MAX_PARTICLE_COUNT = 35000; 
+        let activeParticleCount = 25000; 
+        let basePositions = new Float32Array(MAX_PARTICLE_COUNT * 3); let time = 0;
+
+        function initParticles() {
+            particleGeometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(MAX_PARTICLE_COUNT * 3); const sizes = new Float32Array(MAX_PARTICLE_COUNT);
+            for(let i=0; i<MAX_PARTICLE_COUNT; i++) { positions[i*3]=0; positions[i*3+1]=0; positions[i*3+2]=0; sizes[i] = 0.3 + Math.random()*0.7; }
+            particleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            particleGeometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+            particles = new THREE.Points(particleGeometry, particleMaterial); scene.add(particles);
+            generateShape('heart_1'); 
+            particleGeometry.setDrawRange(0, activeParticleCount);
+        }
+
+        // --- GENERATE SHAPE (Same logic as V26) ---
+        function generateShape(type) {
+            const tempPos = []; let i = 0;
+            const randomInSphere = (scale) => { const u=Math.random(), v=Math.random(), theta=2*Math.PI*u, phi=Math.acos(2*v-1), r=Math.cbrt(Math.random())*scale; return {x:r*Math.sin(phi)*Math.cos(theta), y:r*Math.sin(phi)*Math.sin(theta), z:r*Math.cos(phi)}; };
+
+            while (i < MAX_PARTICLE_COUNT) {
+                let x, y, z;
+                if (type === 'saturn') {
+                    const rand = Math.random();
+                    if (rand < 0.35) { const p = randomInSphere(4.0); tempPos.push(p.x, p.y, p.z); } 
+                    else { 
+                        const angle = Math.random() * Math.PI * 2;
+                        let dist; if (Math.random() < 0.6) dist = 7.0 + Math.random() * 3.5; else dist = 11.5 + Math.random() * 4.5;
+                        const ringX = Math.cos(angle) * dist; const ringZ = Math.sin(angle) * dist; const ringY = (Math.random() - 0.5) * 0.1;
+                        const tilt = 0.4;
+                        const ty = ringY * Math.cos(tilt) - ringZ * Math.sin(tilt);
+                        const tz = ringY * Math.sin(tilt) + ringZ * Math.cos(tilt);
+                        tempPos.push(ringX, ty, tz);
+                    }
+                    i++;
+                } else if (type === 'heart') {
+                    const s = 3.5; const p = randomInSphere(s); const rx = p.x, ry = p.y, rz = p.z;
+                    const xx = rx*rx, yy = ry*ry, zz = rz*rz; const a = xx + (9/4)*yy + zz - 1;
+                    if (a*a*a - xx*zz*rz - (9/80)*yy*zz*rz <= 0) {
+                         const noiseScale = 2.5; const noiseVal = simplex.noise3D(rx*noiseScale, ry*noiseScale, rz*noiseScale);
+                         if (noiseVal > -0.12 && noiseVal < 0.12) { x = rx * 11; y = rz * 11; z = -ry * 11; tempPos.push(x, y, z); i++; }
+                    }
+                } else if (type === 'heart_1') {
+                    const s = 3.0; const rx = (Math.random() - 0.5) * 2 * s; const ry = (Math.random() - 0.5) * 2 * s; const rz = (Math.random() - 0.5) * 2 * s;
+                    const xx = rx*rx, yy = ry*ry, zz = rz*rz; const a = xx + (9/4)*yy + zz - 1; const val = a*a*a - xx*zz*rz - (9/200)*yy*zz*rz; 
+                    if (val <= 0) {
+                        if (Math.random() < (1.0 / (1.0 + Math.abs(val) * 5.0))) { x = rx * 11.0; y = rz * 11.0 - 2.0; z = -ry * 11.0; tempPos.push(x, y, z); i++; }
+                    }
+                } else if (type === 'sphere') { const p=randomInSphere(14); tempPos.push(p.x,p.y,p.z); i++;
+                } else if (type === 'flower') {
+                    const u=Math.random()*6.28,v=Math.random()*3.14; const rb=10+3*Math.sin(5*u)*Math.sin(5*v); const r=rb*(0.8+Math.random()*0.3); x=r*Math.sin(v)*Math.cos(u);y=r*Math.sin(v)*Math.sin(u);z=(r*Math.cos(v))*0.6; tempPos.push(x,y,z);i++;
+                } else if (type === 'donut') { 
+                    const u=Math.random()*6.28,v=Math.random()*6.28,R=10.0,r=3.5*Math.sqrt(Math.random()); x=(R+r*Math.cos(v))*Math.cos(u);y=(R+r*Math.cos(v))*Math.sin(u);z=r*Math.sin(v); tempPos.push(x,y,z);i++;
+                } else if (type === 'pyramid') { 
+                    const h=15,b=13; const px=(Math.random()-0.5)*2,pz=(Math.random()-0.5)*2,py=Math.random(),l=1-py; if(Math.abs(px)<=l&&Math.abs(pz)<=l){ x=px*b; z=pz*b; y=(py*h)-(h/2.5); tempPos.push(x,y,z);i++; }
+                }
+            }
+            basePositions.set(tempPos);
+        }
+        initParticles();
+
+        // --- 6. Interaction & Animation ---
+        let isDragging = false, previousMousePosition = {x:0,y:0}, rotationVelocity = {x:0,y:0}, uiScale=1.0, handScale=1.0, targetHandScale=1.0;
+        const rotationDamping = 0.95;
+
+        document.addEventListener('mousedown',e=>{if(e.target.closest('#drawer')||e.target.closest('#menu-toggle'))return;isDragging=true;document.body.classList.add('grabbing');previousMousePosition={x:e.clientX,y:e.clientY};});
+        document.addEventListener('mousemove',e=>{if(!isDragging)return;const delta={x:e.clientX-previousMousePosition.x,y:e.clientY-previousMousePosition.y};rotationVelocity.x=delta.y*0.005;rotationVelocity.y=delta.x*0.005;particles.rotation.x+=rotationVelocity.x;particles.rotation.y+=rotationVelocity.y;previousMousePosition={x:e.clientX,y:e.clientY};});
+        document.addEventListener('mouseup',()=>{isDragging=false;document.body.classList.remove('grabbing');});
+        document.addEventListener('touchstart',e=>{if(e.target.closest('#drawer')||e.target.closest('#menu-toggle'))return;isDragging=true;previousMousePosition={x:e.touches[0].clientX,y:e.touches[0].clientY};},{passive:false});
+        document.addEventListener('touchmove',e=>{if(!isDragging)return;const delta={x:e.touches[0].clientX-previousMousePosition.x,y:e.touches[0].clientY-previousMousePosition.y};rotationVelocity.x=delta.y*0.005;rotationVelocity.y=delta.x*0.005;particles.rotation.x+=rotationVelocity.x;particles.rotation.y+=rotationVelocity.y;previousMousePosition={x:e.touches[0].clientX,y:e.touches[0].clientY};e.preventDefault();},{passive:false});
+        document.addEventListener('touchend',()=>{isDragging=false;});
+        document.addEventListener('wheel',e=>{if(e.target.closest('#drawer'))return;e.preventDefault();const delta=e.deltaY*-0.002;uiScale=Math.min(Math.max(0.7,uiScale+delta),4.0);document.getElementById('slider-scale').value=uiScale;document.getElementById('val-scale').innerText=uiScale.toFixed(1)+'x';},{passive:false});
+
+        function animate() {
+            requestAnimationFrame(animate); time += 0.003;
+            if(!isNaN(targetHandScale)&&isFinite(targetHandScale)) handScale+=(targetHandScale-handScale)*0.08; else targetHandScale=1.0;
+            const finalScale = uiScale * handScale; particleUniforms.scaleFactor.value = finalScale;
+            camera.position.z += (cameraBaseZ / Math.pow(finalScale, 0.7) - camera.position.z) * 0.05;
+
+            if(!particleGeometry||!particleGeometry.attributes.position) return;
+            const positions = particleGeometry.attributes.position.array;
+            for(let i=0; i<activeParticleCount; i++) {
+                const i3=i*3, bx=basePositions[i3], by=basePositions[i3+1], bz=basePositions[i3+2];
+                const nx=Math.sin(time*1.2+by*0.03)*0.15, ny=Math.cos(time*1.0+bx*0.03)*0.15, nz=Math.sin(time*1.4+bz*0.03)*0.15;
+                positions[i3]=bx*finalScale+nx; positions[i3+1]=by*finalScale+ny; positions[i3+2]=bz*finalScale+nz;
+            }
+            particleGeometry.attributes.position.needsUpdate = true;
+
+            if (!isDragging) {
+                particles.rotation.x += rotationVelocity.x; particles.rotation.y += rotationVelocity.y;
+                rotationVelocity.x *= rotationDamping; rotationVelocity.y *= rotationDamping;
+                if (Math.abs(rotationVelocity.y) < 0.0001) { particles.rotation.y += 0.001 / Math.max(1, finalScale * 0.5); }
+            }
+            composer.render();
+        }
+        animate(); window.addEventListener('resize',()=>{camera.aspect=window.innerWidth/window.innerHeight;camera.updateProjectionMatrix();renderer.setSize(window.innerWidth,window.innerHeight);composer.setSize(window.innerWidth,window.innerHeight);});
+
+        // --- 7. UI Setup ---
+        const menuBtn=document.getElementById('menu-toggle'), drawer=document.getElementById('drawer'); let isDrawerOpen=false;
+        menuBtn.addEventListener('click',()=>{isDrawerOpen=!isDrawerOpen;drawer.classList.toggle('translate-x-full',!isDrawerOpen);menuBtn.innerHTML=isDrawerOpen?'<i class="fa-solid fa-xmark text-sm"></i>':'<i class="fa-solid fa-bars text-sm"></i>';});
+        document.querySelectorAll('.btn-shape').forEach(btn=>{btn.addEventListener('click',(e)=>{document.querySelectorAll('.btn-shape').forEach(b=>b.classList.remove('active'));e.target.classList.add('active');generateShape(e.target.dataset.shape);});});
+        
+        colorPalettes.forEach((p,i)=>{
+            const d=document.createElement('div'); d.className=`color-dot ${i===14?'active':''}`;
+            d.style.background=`linear-gradient(135deg, #${new THREE.Color(p.core).getHexString()}, #${new THREE.Color(p.rim).getHexString()})`;
+            d.addEventListener('click',()=>{document.querySelectorAll('.color-dot').forEach(cd=>cd.classList.remove('active'));d.classList.add('active');particleUniforms.colorCore.value.setHex(p.core);particleUniforms.colorRim.value.setHex(p.rim);});
+            document.getElementById('color-container').appendChild(d);
+        });
+
+        document.getElementById('slider-scale').addEventListener('input',(e)=>{uiScale=parseFloat(e.target.value);document.getElementById('val-scale').innerText=uiScale.toFixed(1)+'x';});
+        document.getElementById('slider-lum').addEventListener('input',(e)=>{particleUniforms.globalOpacity.value=parseFloat(e.target.value);document.getElementById('val-lum').innerText=Math.round(e.target.value*100)+'%';});
+        document.getElementById('slider-dens').addEventListener('input',(e)=>{activeParticleCount=parseInt(e.target.value);particleGeometry.setDrawRange(0,activeParticleCount);document.getElementById('val-dens').innerText=(activeParticleCount/1000).toFixed(0)+'k';});
+        document.getElementById('slider-bloom').addEventListener('input', (e) => { const val = parseFloat(e.target.value); bloomPass.strength = val; document.getElementById('val-bloom').innerText = val.toFixed(1); });
+
+        // Record & Hand Tracking
+        const btnRecord=document.getElementById('btn-record'),recordDot=document.getElementById('record-dot'),recordText=document.getElementById('record-text');let mediaRecorder,recordedChunks=[],isRecording=false;btnRecord.addEventListener('click',()=>isRecording?stopRecording():startRecording());function startRecording(){const stream=document.querySelector('canvas').captureStream(30);mediaRecorder=new MediaRecorder(stream,{mimeType:'video/webm;codecs=vp9'});mediaRecorder.ondataavailable=e=>{if(e.data.size>0)recordedChunks.push(e.data);};mediaRecorder.onstop=saveVideo;mediaRecorder.start();isRecording=true;recordText.innerText="Recording...";recordText.classList.add('text-red-400');recordDot.className="w-1.5 h-1.5 rounded-full bg-red-500 recording-pulse";btnRecord.classList.add('border-red-500/50','bg-red-500/10');}function stopRecording(){mediaRecorder.stop();isRecording=false;recordText.innerText="Capture Sequence";recordText.classList.remove('text-red-400');recordDot.className="w-1.5 h-1.5 rounded-full bg-gray-400 group-hover:bg-red-500 transition-colors";btnRecord.classList.remove('border-red-500/50','bg-red-500/10');}function saveVideo(){const blob=new Blob(recordedChunks,{type:'video/webm'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`particle-sequence-${Date.now()}.webm`;a.click();URL.revokeObjectURL(url);recordedChunks=[];}
+        
+        const videoElement=document.getElementById('video-element'),loadingOverlay=document.getElementById('loading-overlay'),loadingText=document.getElementById('loading-text');
+        function hideLoading() { loadingOverlay.style.opacity = '0'; setTimeout(() => loadingOverlay.style.display = 'none', 500); }
+        setTimeout(() => { if (loadingOverlay.style.display !== 'none') { hideLoading(); if (loadingText) loadingText.innerText = "CAMERA NOT FOUND - MOUSE MODE"; } }, 3500);
+        
+        const { Hands } = window; const { Camera } = window;
+        function onResults(results) { 
+            hideLoading(); 
+            if(results.multiHandLandmarks&&results.multiHandLandmarks.length>0){
+                let total=0,count=0;
+                for(const lm of results.multiHandLandmarks){
+                    const wrist=lm[0],middle=lm[12],base=lm[9],dist=(p1,p2)=>Math.hypot(p1.x-p2.x,p1.y-p2.y,p1.z-p2.z),size=Math.max(0.1,dist(wrist,base)),open=dist(wrist,middle);
+                    const ratio = open / size; let t = (ratio - 0.8) / 1.0; t = Math.max(0, Math.min(1, t)); 
+                    let val = 1.0 + (3.0 * Math.pow(t, 0.6));
+                    if(!isNaN(val)){total+=val;count++;}
+                }
+                if(count>0)targetHandScale=total/count;
+            } else { targetHandScale=1.0; } 
+        }
+        try { const hands = new Hands({locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`}); hands.setOptions({maxNumHands: 2, modelComplexity: 0, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5}); hands.onResults(onResults); const cam = new Camera(videoElement, { onFrame: async () => { await hands.send({image: videoElement}); }, width: 640, height: 480 }); cam.start().catch(err => { hideLoading(); if (loadingText) loadingText.innerText = "CAMERA NOT FOUND - MOUSE MODE"; }); } catch(e) { hideLoading(); }
+    </script>
+</body>
+</html>
